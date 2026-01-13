@@ -4,7 +4,6 @@ import string
 import traceback
 from argparse import ArgumentParser
 from datetime import datetime
-from itertools import chain, filterfalse, zip_longest
 from pathlib import Path
 
 import hooks
@@ -13,12 +12,7 @@ from config_reader import config
 from logger import logger, update_log_formats
 from proxy import get_proxies
 from search_controller import SearchController
-from utils import (
-    get_random_user_agent_string,
-    get_domains,
-    take_screenshot,
-    generate_click_report,
-)
+from utils import get_random_user_agent_string, take_screenshot, generate_click_report
 from webdriver import create_webdriver
 
 
@@ -135,8 +129,6 @@ def main():
     else:
         proxy = None
 
-    domains = get_domains()
-
     user_agent = get_random_user_agent_string()
 
     plugin_folder_name = "".join(random.choices(string.ascii_lowercase, k=5))
@@ -167,59 +159,26 @@ def main():
         if args.device_id:
             search_controller.assign_android_device(args.device_id)
 
-        ads, non_ad_links, shopping_ads = search_controller.search_for_ads(non_ad_domains=domains)
+        clicked_url = search_controller.click_first_matching_result(max_pages=3)
 
         if config.behavior.hooks_enabled:
             hooks.after_search_hook(driver)
-
-        if not (ads or shopping_ads or non_ad_links):
-            logger.info("No ads found in the search results!")
-
-            if config.behavior.telegram_enabled:
-                notify_matching_ads(query, links=None, stats=search_controller.stats)
-        else:
-            logger.debug(f"Selected click order: {config.behavior.click_order}")
-
-            if config.behavior.click_order == 1:
-                all_links = non_ad_links + ads
-
-            elif config.behavior.click_order == 2:
-                all_links = ads + non_ad_links
-
-            elif config.behavior.click_order == 3:
-                if non_ad_links and ads:
-                    all_links = [non_ad_links[0]] + [ads[0]] + non_ad_links[1:] + ads[1:]
-                else:
-                    logger.debug("No mixed ads/non-ads available. Continuing with available links.")
-                    all_links = ads + non_ad_links
-
-            elif config.behavior.click_order == 4:
-                all_links = list(
-                    filterfalse(
-                        lambda x: not x, chain.from_iterable(zip_longest(non_ad_links, ads))
-                    )
-                )
-
-            else:
-                all_links = ads + non_ad_links
-                random.shuffle(all_links)
-
-            logger.info(
-                f"Found {len(ads) + len(shopping_ads)} ads and {len(non_ad_links)} non-ad links"
-            )
-
-            if shopping_ads:
-                search_controller.click_shopping_ads(shopping_ads)
-            if all_links:
-                search_controller.click_links(all_links)
-
-            if config.behavior.hooks_enabled:
+            if clicked_url:
                 hooks.after_clicks_hook(driver)
 
-            if config.behavior.telegram_enabled:
-                notify_matching_ads(query, links=ads + shopping_ads, stats=search_controller.stats)
+        if clicked_url:
+            logger.info(f"Clicked matching result: {clicked_url}")
+        else:
+            logger.info("No matching results found in the first 3 pages.")
 
-            logger.info(search_controller.stats)
+        if config.behavior.telegram_enabled:
+            notify_matching_ads(
+                query,
+                links=[clicked_url] if clicked_url else None,
+                stats=search_controller.stats,
+            )
+
+        logger.info(search_controller.stats)
 
     except Exception as exp:
         logger.error("Exception occurred. See the details in the log file.")

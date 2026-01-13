@@ -7,6 +7,10 @@ from pathlib import Path
 from time import sleep
 from typing import Optional
 
+from compat import ensure_distutils
+
+ensure_distutils()
+
 try:
     import requests
     import openpyxl

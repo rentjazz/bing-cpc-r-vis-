@@ -175,6 +175,194 @@ class SearchController:
 
         return (ad_links, non_ad_links, shopping_ad_links)
 
+    def click_first_matching_result(self, max_pages: int = 3) -> Optional[str]:
+        """Click the first matching result across up to max_pages pages.
+
+        :type max_pages: int
+        :param max_pages: Maximum number of pages to check
+        :rtype: Optional[str]
+        :returns: Clicked url if a matching result was clicked, otherwise None
+        """
+
+        self._prepare_search_page()
+        self._submit_search_query()
+
+        for page_index in range(1, max_pages + 1):
+            logger.info(f"Scanning results page {page_index} for allowed domains...")
+
+            matched_result = self._find_first_matching_result()
+            if matched_result:
+                link_element, link_url, category, canon_link = matched_result
+                clicked_url = canon_link or link_url
+                self._click_result(link_element, link_url, category, canon_link)
+                return clicked_url
+
+            if page_index < max_pages:
+                if not self._go_to_next_results_page():
+                    logger.info("No next page available. Stopping search.")
+                    break
+
+        logger.info(
+            "No matching results found within the first "
+            f"{max_pages} page{'s' if max_pages > 1 else ''}."
+        )
+        return None
+
+    def _prepare_search_page(self) -> None:
+        """Prepare the search page before sending the query."""
+
+        if self._use_custom_cookies:
+            self._driver.delete_all_cookies()
+            add_cookies(self._driver)
+
+            for cookie in self._driver.get_cookies():
+                logger.debug(cookie)
+
+        self._check_captcha()
+        self._close_cookie_dialog()
+
+    def _submit_search_query(self) -> None:
+        """Submit the search query on Bing."""
+
+        logger.info(f"Starting search for '{self._search_query}'")
+        sleep(get_random_sleep(1, 3) * config.behavior.wait_factor)
+
+        try:
+            search_input_box = self._driver.find_element(*self.SEARCH_INPUT)
+            search_input_box.send_keys(self._search_query, Keys.ENTER)
+
+        except NoSuchElementException:
+            self._close_cookie_dialog()
+            search_input_box = self._driver.find_element(*self.SEARCH_INPUT)
+            search_input_box.send_keys(self._search_query, Keys.ENTER)
+
+        sleep(get_random_sleep(3, 5) * config.behavior.wait_factor)
+
+        if self._hooks_enabled:
+            hooks.after_query_sent_hook(self._driver, self._search_query)
+
+        self._wait_for_results()
+
+    def _wait_for_results(self) -> None:
+        """Wait for search results to load."""
+
+        wait = WebDriverWait(self._driver, timeout=5)
+        wait.until(EC.presence_of_element_located(self.RESULTS_CONTAINER))
+
+        if self._hooks_enabled:
+            hooks.results_ready_hook(self._driver)
+
+    def _find_first_matching_result(self) -> Optional[tuple[LinkElement, str, str, str]]:
+        """Find the first result matching allowed domains on the current page."""
+
+        try:
+            results_container = self._driver.find_element(*self.RESULTS_CONTAINER)
+        except NoSuchElementException:
+            logger.error("Results container not found on the page.")
+            return None
+
+        link_selectors = ",".join(
+            [
+                "li.b_adTop h2 a:last-child",
+                "li.b_adBottom h2 a:last-child",
+                "li.b_algo h2 a",
+                "li.b_algoheader a",
+                "a.tilk",
+            ]
+        )
+
+        link_elements = results_container.find_elements(By.CSS_SELECTOR, link_selectors)
+
+        for link_element in link_elements:
+            link_url = link_element.get_attribute("href")
+            if not link_url:
+                continue
+
+            is_ad_element = self._is_ad_element(link_element)
+            canon_link = None
+
+            if is_ad_element:
+                canon_link = self._get_ad_canonical_link(link_element)
+
+            if self._is_allowed_domain(link_url) or (
+                canon_link and self._is_allowed_domain(canon_link)
+            ):
+                category = "Ad" if is_ad_element else "Non-ad"
+                return (link_element, link_url, category, canon_link)
+
+        return None
+
+    def _is_ad_element(self, link_element: LinkElement) -> bool:
+        """Determine whether a link element is inside an ad container."""
+
+        try:
+            link_element.find_element(
+                By.XPATH,
+                "ancestor::li[contains(@class, 'b_adTop') or contains(@class, 'b_adBottom')]",
+            )
+            return True
+        except NoSuchElementException:
+            return False
+
+    def _get_ad_canonical_link(self, link_element: LinkElement) -> Optional[str]:
+        """Extract canonical link text for an ad element if available."""
+
+        try:
+            canon_link_element = link_element.find_element(*self.AD_CANON_LINK)
+        except NoSuchElementException:
+            try:
+                canon_link_element = link_element.find_element(*self.AD_CANON_LINK_2)
+            except NoSuchElementException:
+                try:
+                    canon_link_element = link_element.find_element(*self.AD_CANON_LINK_3)
+                except NoSuchElementException:
+                    try:
+                        canon_link_element = link_element.find_element(*self.AD_CANON_LINK_4)
+                    except NoSuchElementException:
+                        return None
+
+        return canon_link_element.text.strip()
+
+    def _click_result(
+        self, link_element: LinkElement, link_url: str, category: str, canon_link: Optional[str]
+    ) -> None:
+        """Click the given result link with appropriate handling."""
+
+        original_window_handle = self._driver.current_window_handle
+        is_ad_element = category == "Ad"
+
+        if is_ad_element and self._hooks_enabled:
+            hooks.before_ad_click_hook(self._driver)
+
+        logger.info(f"Clicking first matching result: {link_url}")
+
+        if config.behavior.send_to_android and self._android_device_id:
+            self._handle_android_click(link_element, is_ad_element, category)
+        else:
+            self._handle_browser_click(
+                link_element,
+                canon_link or link_url,
+                is_ad_element,
+                original_window_handle,
+                category,
+            )
+
+        if is_ad_element and self._hooks_enabled:
+            hooks.after_ad_click_hook(self._driver)
+
+    def _go_to_next_results_page(self) -> bool:
+        """Navigate to the next results page if available."""
+
+        try:
+            next_page_link = self._driver.find_element(By.CSS_SELECTOR, "a.sb_pagN")
+        except NoSuchElementException:
+            return False
+
+        next_page_link.click()
+        sleep(get_random_sleep(2, 3) * config.behavior.wait_factor)
+        self._wait_for_results()
+        return True
+
     def click_shopping_ads(self, shopping_ads: AdList) -> None:
         """Click shopping ads if there are any
 
