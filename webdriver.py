@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import random
 import shutil
@@ -5,6 +6,12 @@ import sys
 from pathlib import Path
 from time import sleep
 from typing import Optional
+
+if importlib.util.find_spec("distutils") is None:
+    import setuptools._distutils as distutils
+
+    sys.modules.setdefault("distutils", distutils)
+    sys.modules.setdefault("distutils.version", distutils.version)
 
 try:
     import pyautogui
