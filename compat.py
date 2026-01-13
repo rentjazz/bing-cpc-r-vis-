@@ -9,7 +9,12 @@ def ensure_distutils() -> None:
     if importlib.util.find_spec("distutils") is not None:
         return
 
-    if importlib.util.find_spec("setuptools._distutils") is not None:
+    try:
+        setuptools_spec = importlib.util.find_spec("setuptools")
+    except ModuleNotFoundError:
+        setuptools_spec = None
+
+    if setuptools_spec and importlib.util.find_spec("setuptools._distutils") is not None:
         import setuptools._distutils as distutils
 
         sys.modules.setdefault("distutils", distutils)
