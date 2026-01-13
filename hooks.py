@@ -1,5 +1,9 @@
 from pathlib import Path
 
+from compat import ensure_distutils
+
+ensure_distutils()
+
 try:
     import undetected_chromedriver
 except ImportError:
