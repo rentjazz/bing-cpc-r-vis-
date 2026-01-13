@@ -21,7 +21,12 @@ def ensure_distutils() -> None:
         sys.modules.setdefault("distutils.version", distutils.version)
         return
 
-    if importlib.util.find_spec("packaging.version") is not None:
+    try:
+        packaging_spec = importlib.util.find_spec("packaging")
+    except ModuleNotFoundError:
+        packaging_spec = None
+
+    if packaging_spec and importlib.util.find_spec("packaging.version") is not None:
         from packaging.version import Version
 
         distutils = types.ModuleType("distutils")
